@@ -17,12 +17,11 @@ library(ggpubr)
 
 ##data read in 
 ```{r data read in }
-setwd("G:/My Drive/UW/2021 AU/IGVF/analysis/genecard_files/")
-#setwd("./analysis/genecard_files/")
+setwd("analysis path")
 genetab = read.csv("./update.revel.final.tab.gene.csv")
 misrevel = readRDS("./misrevel.RDS")
-lppv = read.table("../../data/REVEL_local_posteriors.txt", header = TRUE)
-gnomadmis = read.table("../var prioritization/gnomad.mis.revel.tab",header = F) %>%
+lppv = read.table(".data/REVEL_local_posteriors.txt", header = TRUE)
+gnomadmis = read.table("./gnomad.mis.revel.tab",header = F) %>%
   dplyr::rename(CHR = V1, POS= V2, REF = V3, ALT = V4, GENE = V5, REVEL = V6)
 gnomadmis$GENE = as.character(gnomadmis$GENE)
 gnomadmis$GENE[grep("AARS", gnomadmis$GENE)] = "AARS1"
@@ -35,7 +34,7 @@ pp_gnomad = uni_gnomadmis %>% na.omit() %>%
             sum_ppP_gnom = sum(ppP_gnom, na.rm = T),
             sum_ppB_gnom = sum(ppB_gnom, na.rm = T))
 
-g2pubcnt = read.table("../gene2pubmed_analysis/g2pubcnt.wID", header = 1, sep = "\t")
+g2pubcnt = read.table("./g2pubcnt.wID", header = 1, sep = "\t")
 
 tmp_cnt = misrevel %>% na.omit() %>% group_by(GENE, mergCLINSIG) %>% tally()
 new_varcnt = spread(tmp_cnt, key = mergCLINSIG, value = n) %>% replace(is.na(.),0) %>%
@@ -54,7 +53,7 @@ length(final.geneset)
 
 ##the number of genes that have length within the assayed genes 
 ```{r}
-geneWassay = read.csv("../IGVFgenesets418/geneWassay.csv")
+geneWassay = read.csv("./geneWassay.csv")
 assayg = intersect(genetab$genename, geneWassay$x)
 minlen = min(genetab %>% filter(genename %in% assayg) %>% select(Len.of.Protein), na.rm = T) #101
 maxlen = max(genetab %>% filter(genename %in% assayg) %>% select(Len.of.Protein), na.rm = T) #3418
@@ -88,9 +87,6 @@ score_a = misrevel %>% na.omit() %>%
   mutate(score_a1 = sum_ppP_clinv + sum_ppP_gnom,
          score_a2 = sum_ppB_clinv + sum_ppB_gnom,
          len = genetab$Len.of.Protein[match(GENE, genetab$genename)]) 
-#write.csv(score_a, file = "../formal_ranking_methods/scores_a.csv")
-
-#write.csv(score_a, file = "../formal_ranking_methods/final.scores_a.csv")
 ```
 
 ## motivation b:
@@ -115,8 +111,6 @@ score_b_2 = misrevel %>% na.omit()%>%
 score_b = merge(score_b_1, score_b_2, by = "GENE", all = T) %>% replace(is.na(.), 0) %>%
   mutate(len = genetab$Len.of.Protein[match(GENE, genetab$genename)]) %>%
   mutate(score = sum_ppP_1 + sum_ppB_2)
-#write.csv(score_b, file = "../formal_ranking_methods/scores_b.csv")
-#write.csv(score_b, file = "../formal_ranking_methods/final.scores_b.csv")
 ```
 
 ## motivation c:
@@ -149,7 +143,6 @@ score_c = merge(score_c1, score_c2, by="GENE", all=T) %>%
          score_P = mean_en_P *(1+log((VUS+ gnomad), base = 10)/log(max(VUS + gnomad), base = 10)),
          score_B = mean_en_B *(1+log((VUS+ gnomad), base = 10)/log(max(VUS + gnomad), base = 10)),
          len = genetab$Len.of.Protein[match(GENE, genetab$genename)])
-#write.csv(score_c, file = "../formal_ranking_methods/final.scores_c.csv")
 ```
 
 ### compare distributions among different lists of top genes
@@ -264,16 +257,10 @@ b_topgs = data.frame(assayg_sb1 = score_b$sum_ppP_1[match(assaygb, score_b$GENE)
 b1_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Relabeling Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(assaygb)),
                                        levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Relabeling Score","Random"))),
                        Scores =c(b_topgs$assayg_sb1, b_topgs$topg_sb1, b_topgs$randomg_sb1, b_topgs$pubcntg_sb1, b_topgs$vuspg_sb1, b_topgs$vusgnomg_sb1))
-#b1_p = ggplot(b1_dendat, aes(x=Scores, color=Criteria)) + 
-#  geom_density() + 
-#  ggtitle("Score Density for Motivation b1 (shift benign to pathogenic)")
 
 b2_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Relabeling Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(assaygb)),
                                        levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Relabeling Score","Random"))),
                        Scores =c(b_topgs$assayg_sb2, b_topgs$unassg_sb2, b_topgs$topg_sb2, b_topgs$randomg_sb2, b_topgs$pubcntg_sb2, b_topgs$vuspg_sb2, b_topgs$vusgnomg_sb2))
-#b2_p = ggplot(b2_dendat, aes(x=Scores, color=Criteria)) + 
-#  geom_density() + ggtitle("Score Density for Motivation b2 (shift pathogenic to benign)")
-#grid.arrange(b1_p,b2_p,nrow=2)
   
   
 b1_pvio = ggplot(b1_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
@@ -337,7 +324,6 @@ c1_pvio = ggplot(c1_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) +
 pdf(file = "./Plots/motive_c.pdf", 
     width = 8,
     height = 4) 
-#grid.arrange(c1_pvio,c2_pvio,ncol=2, widths = c(5,3.5))
 c1_pvio
 dev.off()
 ```
@@ -392,14 +378,13 @@ combo.out = foreach(m=1:iterations, .combine = "rbind") %do% {
 }
 
 sum(combo.out == FALSE)
-save(combo.out, file="../../Plots/new.combo.RData")
-save(combo.score, file="../../Plots/new.combo.score.RData")
-save(weights, file = "../../Plots/new.weights.RData")
+save(combo.out, file="./new.combo.RData")
+save(combo.score, file="./new.combo.score.RData")
+save(weights, file = "./new.weights.RData")
 ```
 
 ### violin plot for the combo gene set
 ```{r, warning=FALSE}
-#load("../../Plots/combo.RData")
 topgs = names(sort(combo.score[,which.max(combo.out)], decreasing = T)) %>% head(length(FINAL.assayg))
 intersect(topgs, FINAL.assayg)
 compgs = data.frame(combogs = topgs, assaygs = FINAL.assayg)
@@ -670,7 +655,6 @@ com_c1 = score_c %>% filter(GENE %in% togs94) %>% pull(score_P)
 
 scc1 = data.frame(ts_c1, com_c1, DAIS = score_c$score_P[match(daisg, score_c$GENE)] )
 m.scc1 = melt(scc1)
-#levels(m.scc1$variable) = c("ts_c1", "com_c1", "DAIS")
 
 p_compc1 = ggbetweenstats(
   data  = m.scc1,
@@ -711,10 +695,7 @@ ggarrange(p_compa, p_compb, p_compc1, nrow = 3, labels = c("A","B","C"))
 dev.off()
 ```
 
-### Friz paper pval calc
-```{r}
-getwilp(m.sca1, comp = friz_compa1)
-```
+
 
 ###new violin plots A
 ```{r new violin plots A, warning=FALSE, message=FALSE}
@@ -938,61 +919,17 @@ getwilp(f.a2dendat)
 getwilp(f.b1dendat, comp = b1_compare)
 getwilp(f.b2dendat, comp = b2_compare)
 getwilp(f.c1dendat, comp = c1_compare)
+
+### Friz paper pval calc
+getwilp(m.sca1, comp = friz_compa1)
 ```
 
 ###get top genes for g-profiler go enrichment
 ```{r}
-write.table(final.geneset, file= "../g_profiler_output/background.txt", row.names = F, col.names = F, quote = F)
-write.table(togs100, file = "../g_profiler_output/combo100.txt", row.names = F, col.names = F, quote = F)
-write.table(vareff_tab$DAIS, file = "../g_profiler_output/DAIS.txt", row.names = F, col.names = F, quote = F)
+write.table(final.geneset, file= "./background.txt", row.names = F, col.names = F, quote = F)
+write.table(togs100, file = "./combo100.txt", row.names = F, col.names = F, quote = F)
+write.table(vareff_tab$DAIS, file = "./DAIS.txt", row.names = F, col.names = F, quote = F)
 
-
-
-#write.csv(score_a %>% arrange(desc(score_a1)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_a1.csv", row.names = F, quote = F)
-#write.csv(score_a %>% arrange(desc(score_a2)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_a2.csv", row.names = F, quote = F)
-
-#write.csv(score_b %>% arrange(desc(sum_ppP_1)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_b1.csv", row.names = F, quote = F)
-#write.csv(score_b %>% arrange(desc(sum_ppB_2)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_b2.csv", row.names = F, quote = F)
-
-#write.csv(score_c1 %>% arrange(desc(score_P)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_c1.csv", row.names = F, quote = F)
-#write.csv(score_c2 %>% arrange(desc(score_P)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_c2.csv", row.names = F, quote = F)
-```
-
-### venn diagram
-```{r}
-library(VennDiagram)
-library(RColorBrewer)
-
-venn.diagram(
-  x = list(togs100, vareff_tab$DAIS, FINAL.assayg),
-  category.names = c("With Top Combnation Scores", "DAIS", "Assayed Genes"),
-  filename = './Plots/new.commSet.png',
-  output = TRUE ,
-          imagetype="png" ,
-          height = 480 , 
-          width = 880 , 
-          resolution = 300,
-          compression = "lzw",
-          # Circles
-        lwd = 2,
-        lty = 'blank',
-        fill = brewer.pal(3, "Pastel2"),
-        
-        # Numbers
-        cex = .6,
-        fontface = "bold",
-        fontfamily = "sans",
-        
-        # Set names
-        cat.cex = 0.6,
-        cat.fontface = "bold",
-        cat.default.pos = "outer",
-        cat.pos = c(-27, 27, 135),
-        cat.dist = c(0.055, 0.055, 0.085),
-        cat.fontfamily = "sans",
-        rotation = 1
-        )
-```
 
 ### TABLE: top 20 genes with highest combo scores
 ```{r}
