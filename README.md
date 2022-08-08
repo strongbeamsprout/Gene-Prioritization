@@ -12,6 +12,7 @@ This repo contains:
   4. misrevel.RDS: REVEL scores obtained from https://sites.google.com/site/revelgenomics/downloads.
   5. REVEL_local_posteriors.txt: a mapping of all possible REVEL scores to local posterior probability of pathogenicity and benignity from Pejaver et al..
   6. complete_prio_gene_sysVarEffMap_paper.csv: DAIS score prioritized gene list from Kuang et al..
+Note: gnomad.mis.revel.tab is not uploaded because of data size limitation but it can be easily obtained here (https://gnomad.broadinstitute.org/; v2.1.1 GRCh38 dataset)
 
 - Results:
 
