@@ -1,0 +1,1263 @@
+---
+title: "rank_by_comptool"
+author: "YileChen"
+date: '2022-07-26'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(ggpubr)
+```
+
+##data read in 
+```{r data read in }
+setwd("G:/My Drive/UW/2021 AU/IGVF/analysis/genecard_files/")
+#setwd("/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/analysis/genecard_files/")
+genetab = read.csv("./update.revel.final.tab.gene.csv")
+misrevel = readRDS("./misrevel.RDS")
+lppv = read.table("../../data/REVEL_local_posteriors.txt", header = TRUE)
+gnomadmis = read.table("../var prioritization/gnomad.mis.revel.tab",header = F) %>%
+  dplyr::rename(CHR = V1, POS= V2, REF = V3, ALT = V4, GENE = V5, REVEL = V6)
+gnomadmis$GENE = as.character(gnomadmis$GENE)
+gnomadmis$GENE[grep("AARS", gnomadmis$GENE)] = "AARS1"
+uni_gnomadmis = anti_join(gnomadmis, misrevel, by = c("CHR", "POS", "REF", "ALT", "GENE"))
+pp_gnomad = uni_gnomadmis %>% na.omit() %>% 
+  mutate(ppP_gnom = lppv$PosteriorCI_pathogenic[match(round(REVEL,3), lppv$Thresholds)],
+         ppB_gnom = lppv$PosteriorCI_benign[match(round(REVEL,3), lppv$Thresholds)]) %>%
+  group_by(GENE) %>% 
+  summarise(gnomAD_cnt = n(),
+            sum_ppP_gnom = sum(ppP_gnom, na.rm = T),
+            sum_ppB_gnom = sum(ppB_gnom, na.rm = T))
+
+g2pubcnt = read.table("../gene2pubmed_analysis/g2pubcnt.wID", header = 1, sep = "\t")
+
+tmp_cnt = misrevel %>% na.omit() %>% group_by(GENE, mergCLINSIG) %>% tally()
+new_varcnt = spread(tmp_cnt, key = mergCLINSIG, value = n) %>% replace(is.na(.),0) %>%
+  as.data.frame()%>% 
+  mutate(vus = Conflicting_interpretations_of_pathogenicity+Uncertain_significance,
+         blb = Benign+Likely_benign+`Benign/Likely_benign`,
+         plp = Pathogenic+Likely_pathogenic+`Pathogenic/Likely_pathogenic`) %>%
+  select(GENE, vus, blb, plp) %>%
+  mutate(gnomad_cnt = pp_gnomad$gnomAD_cnt[match(GENE, pp_gnomad$GENE)],
+         vus_plp = vus+plp,
+         vus_gnom = vus + gnomad_cnt)
+
+final.geneset = new_varcnt %>% filter(vus >0 & (plp >0 | blb >0)& gnomad_cnt >0) %>% pull(GENE) %>% as.character()
+length(final.geneset)
+```
+
+##the number of genes that have length within the assayed genes 
+```{r}
+geneWassay = read.csv("../IGVFgenesets418/geneWassay.csv")
+assayg = intersect(genetab$genename, geneWassay$x)
+minlen = min(genetab %>% filter(genename %in% assayg) %>% select(Len.of.Protein), na.rm = T) #101
+maxlen = max(genetab %>% filter(genename %in% assayg) %>% select(Len.of.Protein), na.rm = T) #3418
+
+minlen; maxlen
+
+FINAL.gene = genetab %>% filter(genename %in% final.geneset) %>% filter(Len.of.Protein >=minlen & Len.of.Protein <=maxlen) %>% pull(genename)
+length(FINAL.gene)
+
+FINAL.assayg = intersect(FINAL.gene, assayg)
+length(FINAL.assayg)
+```
+
+#### Importance score calculation
+## motivation a:
+```{r motivation a}
+score_a = misrevel %>% na.omit() %>%
+  filter(mergCLINSIG == "Conflicting_interpretations_of_pathogenicity"|
+           mergCLINSIG == "Uncertain_significance") %>% 
+  mutate(ppv_a1 = lppv$PosteriorCI_pathogenic[match(round(REVEL,3), lppv$Thresholds)],
+         ppv_a2 = lppv$PosteriorCI_benign[match(round(REVEL,3), lppv$Thresholds)]) %>%
+  group_by(GENE) %>% filter(GENE %in% FINAL.gene) %>%
+  summarise(vus = n(),
+    sum_ppP_clinv = sum(ppv_a1, na.rm = T),
+    sum_ppB_clinv = sum(ppv_a2, na.rm = T)) %>%
+  mutate(GENE = as.character(GENE),
+         gnomAD_cnt = pp_gnomad$gnomAD_cnt[match(GENE, pp_gnomad$GENE)],
+         sum_ppP_gnom = pp_gnomad$sum_ppP_gnom[match(GENE, pp_gnomad$GENE)],
+         sum_ppB_gnom = pp_gnomad$sum_ppB_gnom[match(GENE, pp_gnomad$GENE)])%>%
+  replace(is.na(.), 0) %>%
+  mutate(score_a1 = sum_ppP_clinv + sum_ppP_gnom,
+         score_a2 = sum_ppB_clinv + sum_ppB_gnom,
+         len = genetab$Len.of.Protein[match(GENE, genetab$genename)]) 
+#write.csv(score_a, file = "../formal_ranking_methods/scores_a.csv")
+
+#write.csv(score_a, file = "../formal_ranking_methods/final.scores_a.csv")
+```
+
+## motivation b:
+```{r motivation b}
+score_b_1 = misrevel %>% na.omit()%>% 
+  filter(mergCLINSIG == "Benign"| mergCLINSIG == "Likely_benign"|
+           mergCLINSIG == "Benign/Likely_benign") %>% 
+  mutate(ppv_b = lppv$PosteriorCI_pathogenic[match(round(REVEL,3), lppv$Thresholds)]) %>%
+  group_by(GENE) %>% filter(GENE %in% FINAL.gene) %>%
+  summarise(benign_cnt = n(),
+    sum_ppP_1 = sum(ppv_b, na.rm = T)) %>%
+  mutate(GENE = as.character(GENE))
+score_b_2 = misrevel %>% na.omit()%>% 
+  filter(mergCLINSIG == "Pathogenic"| mergCLINSIG == "Likely_pathogenic"|
+           mergCLINSIG == "Pathogenic/Likely_pathogenic") %>% 
+  mutate(ppv_p = lppv$PosteriorCI_benign[match(round(REVEL,3), lppv$Thresholds)]) %>%
+  group_by(GENE) %>% filter(GENE %in% FINAL.gene) %>%
+  summarise(pathogenic_cnt = n(),
+            sum_ppB_2 = sum(ppv_p, na.rm = T)) %>%
+  mutate(GENE = as.character(GENE))
+
+score_b = merge(score_b_1, score_b_2, by = "GENE", all = T) %>% replace(is.na(.), 0) %>%
+  mutate(len = genetab$Len.of.Protein[match(GENE, genetab$genename)]) %>%
+  mutate(score = sum_ppP_1 + sum_ppB_2)
+#write.csv(score_b, file = "../formal_ranking_methods/scores_b.csv")
+#write.csv(score_b, file = "../formal_ranking_methods/final.scores_b.csv")
+```
+
+## motivation c:
+```{r motivation c}
+score_c1 = misrevel %>% na.omit() %>%
+  filter(mergCLINSIG == "Conflicting_interpretations_of_pathogenicity"|
+           mergCLINSIG == "Uncertain_significance") %>% 
+  mutate(ppP = lppv$PosteriorCI_pathogenic[match(round(REVEL,3), lppv$Thresholds)],
+         ppB = lppv$PosteriorCI_benign[match(round(REVEL,3), lppv$Thresholds)],
+         enP = ifelse(ppP ==0 | ppP ==1, 0, -ppP*log(ppP, base = 2) - (1-ppP)*log(1-ppP, base = 2)),
+         enB = ifelse(ppB ==0 | ppB ==1, 0, -ppB*log(ppB, base = 2) - (1-ppB)*log(1-ppB, base = 2))) %>% 
+  group_by(GENE) %>% filter(GENE %in% FINAL.gene) %>%
+  summarise(VUS = n(),
+            en_P = sum(enP),
+            en_B = sum(enB)) 
+
+score_c2 = uni_gnomadmis %>% na.omit() %>% 
+  mutate(ppP = lppv$PosteriorCI_pathogenic[match(round(REVEL,3), lppv$Thresholds)],
+         ppB = lppv$PosteriorCI_benign[match(round(REVEL,3), lppv$Thresholds)],
+         enP = ifelse(ppP ==0 | ppP ==1, 0, -ppP*log(ppP, base = 2) - (1-ppP)*log(1-ppP, base = 2)),
+         enB = ifelse(ppB ==0 | ppB ==1, 0, -ppB*log(ppB, base = 2) - (1-ppB)*log(1-ppB, base = 2))) %>%
+  group_by(GENE) %>% filter(GENE %in% FINAL.gene) %>%
+  summarise(gnomad = n(),
+            en_P = sum(enP),
+            en_B = sum(enB)) 
+
+score_c = merge(score_c1, score_c2, by="GENE", all=T) %>%
+  mutate(mean_en_P = (en_P.x + en_P.y)/(VUS+ gnomad),
+         mean_en_B = (en_B.x + en_B.y)/(VUS+ gnomad),
+         score_P = mean_en_P *(1+log((VUS+ gnomad), base = 10)/log(max(VUS + gnomad), base = 10)),
+         score_B = mean_en_B *(1+log((VUS+ gnomad), base = 10)/log(max(VUS + gnomad), base = 10)),
+         len = genetab$Len.of.Protein[match(GENE, genetab$genename)])
+#write.csv(score_c, file = "../formal_ranking_methods/final.scores_c.csv")
+```
+
+### compare distributions among different lists of top genes
+## scores for motivation a
+```{r, warning=FALSE}
+#top 68 genes according to score_a1/2
+ts_a1 = score_a %>% arrange(desc(score_a1)) %>% head(length(FINAL.assayg)) %>% pull(GENE)
+ts_a2 = score_a %>% arrange(desc(score_a2)) %>% head(length(FINAL.assayg)) %>% pull(GENE)
+#top 68 genes according to number of publications
+tp = g2pubcnt[order(g2pubcnt$pubmed_cnt, decreasing = T),] %>% filter(symbol %in% score_a$GENE) %>% head(length(FINAL.assayg))
+#top 68 genes according to the number of VUS & pathogenic
+tvusp = new_varcnt %>% filter(GENE %in% score_a$GENE) %>% arrange(desc(vus_plp))%>% head(length(FINAL.assayg)) %>% pull(GENE)
+tvusg = new_varcnt %>% filter(GENE %in% score_a$GENE) %>% arrange(desc(vus_gnom))%>% head(length(FINAL.assayg)) %>% pull(GENE)
+
+a_topgs = data.frame(assayg_sa1 = score_a$score_a1[match(FINAL.assayg, score_a$GENE)],
+                     assayg_sa2 = score_a$score_a2[match(FINAL.assayg, score_a$GENE)],
+                     topg_sa1 = score_a$score_a1[match(ts_a1, score_a$GENE)],
+                     topg_sa2 = score_a$score_a2[match(ts_a2, score_a$GENE)],
+                     randomg_sa1 = sample(score_a$score_a1, size = length(FINAL.assayg)),
+                     randomg_sa2 = sample(score_a$score_a2, size = length(FINAL.assayg)),
+                     pubcntg_sa1 = score_a$score_a1[match(tp$symbol, score_a$GENE)],
+                     pubcntg_sa2 = score_a$score_a2[match(tp$symbol, score_a$GENE)],
+                     vuspg_sa1 = score_a$score_a1[match(tvusp, score_a$GENE)],
+                     vuspg_sa2 = score_a$score_a2[match(tvusp, score_a$GENE)],
+                     vusgnomg_sa1 = score_a$score_a1[match(tvusg, score_a$GENE)],
+                     vusgnomg_sa2 = score_a$score_a2[match(tvusg, score_a$GENE)])
+
+a1_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Movability Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"),each=length(FINAL.assayg)), 
+                                       levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Movability Score","Random"))),
+                       Scores =c(a_topgs$assayg_sa1, a_topgs$topg_sa1, a_topgs$randomg_sa1, a_topgs$pubcntg_sa1, a_topgs$vuspg_sa1, a_topgs$vusgnomg_sa1))
+
+a2_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Movability Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(FINAL.assayg)), 
+                                       levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Movability Score","Random"))),
+                       Scores =c(a_topgs$assayg_sa2, a_topgs$topg_sa2, a_topgs$randomg_sa2, a_topgs$pubcntg_sa2, a_topgs$vuspg_sa2, a_topgs$vusgnomg_sa2))
+
+a1_pvio = ggplot(a1_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
+  geom_violin(trim = FALSE, alpha = 0.6, scale = "count")+
+  geom_boxplot(width=0.2, alpha = 0)+
+  stat_compare_means(comparisons = my_compare,#ref.group = "With Highest Movability Score", 
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE) +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = "none") + xlab("Exp. No. of VUS and gnomAD Var. Move to Pathogenic")
+
+a2_pvio = ggplot(a2_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
+  geom_violin(trim = FALSE, alpha=0.6, draw_quantiles = c(0.25, 0.5, 0.75))+
+  geom_boxplot(width=0.2)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = "none") + ylab("")+
+  xlab("Exp. No. of VUS and gnomAD Var. Move to Benign")
+grid.arrange(a1_pvio,a2_pvio,ncol=2, widths = c(5,3.5))
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/motive_a.pdf", 
+    width = 12,
+    height = 4) 
+grid.arrange(a1_pvio,a2_pvio,ncol=2, widths = c(5,3.5))
+dev.off()
+```
+
+```{r check length dist.}
+hist_vus_dat = misrevel %>% na.omit() %>%
+  filter(mergCLINSIG == "Conflicting_interpretations_of_pathogenicity"|
+           mergCLINSIG == "Uncertain_significance") %>%
+  group_by(GENE) %>% summarise(VUS = n()) %>% 
+  mutate(assayg = ifelse(GENE %in% assayg, "Y","N"),
+         len = genetab$Len.of.Protein[match(GENE, genetab$genename)])
+topunassay = score_a %>% filter(!GENE %in% assayga) %>%
+  arrange(desc(score_a1)) %>% head(72) %>% select(GENE)
+
+newhist_vus_dat = data.frame(assayg = factor(rep(c("Y","N"), each=72)),
+                             len = c(hist_vus_dat$len[match(assayga, hist_vus_dat$GENE)], hist_vus_dat$len[match(topunassay$GENE, hist_vus_dat$GENE)]))
+
+  
+ggplot(hist_vus_dat, aes(x=len, fill=assayg)) +
+  geom_histogram( color="#e9ecef", alpha=0.6, position = 'identity', binwidth = 2) +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  labs(fill="")+scale_x_continuous(trans='log2')+scale_y_continuous(trans='log2')+
+  ggtitle("Histogram of assayed vus counts to unassayed vus counts")
+```
+
+## scores for motivation b
+```{r, warning=FALSE}
+assaygb = intersect(score_b$GENE, geneWassay$x)
+#comp_score_b = score_b
+#score_b = comp_score_b %>% filter(len >= minlen & len <= maxlen)
+#top 68 genes according to score_b1/2
+ts_b1 = score_b %>% arrange(desc(sum_ppP_1)) %>% head(length(assaygb)) %>% select(GENE)
+ts_b2 = score_b %>% arrange(desc(sum_ppB_2)) %>% head(length(assaygb)) %>% select(GENE)
+#top 68 genes according to number of publications
+tp = g2pubcnt[order(g2pubcnt$pubmed_cnt, decreasing = T),] %>% filter(symbol %in% score_b$GENE) %>% head(length(assaygb))
+#top 68 genes according to the number of VUS & pathogenic
+tvusp = new_varcnt %>% arrange(desc(vus_plp))%>% head(length(assaygb)) %>% select(GENE)
+tvusg = new_varcnt %>% arrange(desc(vus_gnom))%>% filter(GENE %in% score_b$GENE) %>% head(length(assaygb)) %>% select(GENE)
+
+b_topgs = data.frame(assayg_sb1 = score_b$sum_ppP_1[match(assaygb, score_b$GENE)],
+                     assayg_sb2 = score_b$sum_ppB_2[match(assaygb, score_b$GENE)],
+                     topg_sb1 = score_b$sum_ppP_1[match(ts_b1$GENE, score_b$GENE)],
+                     topg_sb2 = score_b$sum_ppB_2[match(ts_b2$GENE, score_b$GENE)],
+                     randomg_sb1 = sample(score_b$sum_ppP_1, size = length(assaygb)),
+                     randomg_sb2 = sample(score_b$sum_ppB_2, size = length(assaygb)),
+                     pubcntg_sb1 = score_b$sum_ppP_1[match(tp$symbol, score_b$GENE)],
+                     pubcntg_sb2 = score_b$sum_ppB_2[match(tp$symbol, score_b$GENE)],
+                     vuspg_sb1 = score_b$sum_ppP_1[match(tvusp$GENE, score_b$GENE)],
+                     vuspg_sb2 = score_b$sum_ppB_2[match(tvusp$GENE, score_b$GENE)],
+                     vusgnomg_sb1 = score_b$sum_ppP_1[match(tvusg$GENE, score_b$GENE)],
+                     vusgnomg_sb2 = score_b$sum_ppB_2[match(tvusg$GENE, score_b$GENE)])
+
+b1_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Relabeling Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(assaygb)),
+                                       levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Relabeling Score","Random"))),
+                       Scores =c(b_topgs$assayg_sb1, b_topgs$topg_sb1, b_topgs$randomg_sb1, b_topgs$pubcntg_sb1, b_topgs$vuspg_sb1, b_topgs$vusgnomg_sb1))
+#b1_p = ggplot(b1_dendat, aes(x=Scores, color=Criteria)) + 
+#  geom_density() + 
+#  ggtitle("Score Density for Motivation b1 (shift benign to pathogenic)")
+
+b2_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Relabeling Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(assaygb)),
+                                       levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Relabeling Score","Random"))),
+                       Scores =c(b_topgs$assayg_sb2, b_topgs$unassg_sb2, b_topgs$topg_sb2, b_topgs$randomg_sb2, b_topgs$pubcntg_sb2, b_topgs$vuspg_sb2, b_topgs$vusgnomg_sb2))
+#b2_p = ggplot(b2_dendat, aes(x=Scores, color=Criteria)) + 
+#  geom_density() + ggtitle("Score Density for Motivation b2 (shift pathogenic to benign)")
+#grid.arrange(b1_p,b2_p,nrow=2)
+  
+  
+b1_pvio = ggplot(b1_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  scale_x_continuous(trans='log2', 
+                     labels = scales::number_format(accuracy = 0.01))+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())  +
+  guides(fill = FALSE) + xlab("Relabeling Score for Benign Var")
+
+b2_pvio = ggplot(b2_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  scale_x_continuous(trans='log2', 
+                     labels = scales::number_format(accuracy = 0.01))+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+ 
+  xlab("Relabeling Score for Pathogenic Var")
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/motive_b.pdf", width = 12, height = 4) 
+grid.arrange(b1_pvio,b2_pvio,ncol=2, widths = c(5,3.5))
+dev.off()
+```
+
+## scores for motivation c
+```{r}
+#top 68 genes according to score_c1; 91 genes for score_c2
+ts_c = score_c %>% arrange(desc(score_P)) %>% head(length(FINAL.assayg)) %>% select(GENE)
+
+#top 68 genes according to number of publications
+tp = g2pubcnt[order(g2pubcnt$pubmed_cnt, decreasing = T),] %>% filter(symbol %in% score_c$GENE) %>% head(length(FINAL.assayg))
+
+#top 68 genes according to the number of VUS & pathogenic
+tvusp = new_varcnt %>% arrange(desc(vus_plp))%>% head(length(FINAL.assayg)) %>% select(GENE)
+tvusg = new_varcnt %>% arrange(desc(vus_gnom))%>% head(length(FINAL.assayg)) %>% select(GENE)
+
+c_topgs1 = data.frame(assayg_sc1 = score_c$score_P[match(FINAL.assayg, score_c$GENE)],
+                      topg_sc1 = score_c %>% arrange(desc(score_P)) %>% 
+                       head(length(FINAL.assayg)) %>% select(score_P) %>%
+                       rename(topg_sc1 = score_P),
+                      randomg_sc1 = sample(score_c$score_P, size = length(FINAL.assayg)),
+                      pubcntg_sc1 = score_c$score_P[match(tp$symbol, score_c$GENE)],
+                      vuspg_sc1 = score_c$score_P[match(tvusp$GENE, score_c$GENE)],
+                      vusgnomg_sc1 = score_c$score_P[match(tvusg$GENE, score_c$GENE)])
+
+
+c1_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Uncertainty Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(FINAL.assayg)),
+                                       levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Uncertainty Score","Random"))),
+                       Scores =c(c_topgs1$assayg_sc1, c_topgs1$topg_sc1, c_topgs1$randomg_sc1, c_topgs1$pubcntg_sc1, c_topgs1$vuspg_sc1, c_topgs1$vusgnomg_sc1))
+
+c1_pvio = ggplot(c1_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + xlab("Uncertainty Score for ClinVar VUS and gnomAD Var.")
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/motive_c.pdf", 
+    width = 8,
+    height = 4) 
+#grid.arrange(c1_pvio,c2_pvio,ncol=2, widths = c(5,3.5))
+c1_pvio
+dev.off()
+```
+
+#run combinations
+```{r}
+library(foreach)
+library(LaplacesDemon)
+iterations = 100000
+weights = rdirichlet(iterations, c(1,1,1,1,1))
+score.mat = merge(score_a, score_b, by="GENE", all=T) %>% 
+  select(GENE, score_a1, score_a2, sum_ppP_1, sum_ppB_2)
+score.mat = merge(score.mat, score_c, by="GENE", all=T) %>%
+  select(GENE, score_a1, score_a2, sum_ppP_1, sum_ppB_2, score_P) %>%
+  rename(score_b1 = sum_ppP_1,
+         score_b2 = sum_ppB_2,
+         score_c = score_P) %>% 
+  mutate(z_score_a1 = (score_a1 - mean(score_a1)) / sd(score_a1),
+         z_score_a2 = (score_a2 - mean(score_a2)) / sd(score_a2),
+         z_score_b1 = (score_b1 - mean(score_b1)) / sd(score_b1),
+         z_score_b2 = (score_b2 - mean(score_b2)) / sd(score_b2),
+         z_score_c  = (score_c - mean(score_c)) / sd(score_c))
+
+combo.score = as.matrix(score.mat[,7:11]) %*% t(weights) 
+row.names(combo.score) = score.mat$GENE
+meds_assay = apply(score.mat[,c(1,7:11)] %>% filter(GENE %in% FINAL.assayg) %>% select(-GENE), 2, function(x) quantile(x, probs=0.5))
+p90s_assay = apply(score.mat[,c(1,7:11)] %>% filter(GENE %in% FINAL.assayg) %>% select(-GENE), 2, function(x) quantile(x, probs=0.9))
+#combo.score = combo.score[!rownames(combo.score) %in% FINAL.assayg,]
+
+
+combo.out = foreach(m=1:iterations, .combine = "rbind") %do% {
+  topgs = names(sort(combo.score[,m], decreasing = T)) %>% head(length(FINAL.assayg))
+  score.topgs = score.mat %>% filter(GENE %in% topgs)
+  meds = c(score.topgs %>% pull(z_score_a1) %>% median(),
+           score.topgs %>% pull(z_score_a2) %>% median(),
+           score.topgs %>% pull(z_score_b1) %>% median(),
+           score.topgs %>% pull(z_score_b2) %>% median(),
+           score.topgs %>% pull(z_score_c) %>% median())
+  p90s = c(score.topgs %>% pull(z_score_a1) %>% quantile(probs=0.9),
+           score.topgs %>% pull(z_score_a2) %>% quantile(probs=0.9),
+           score.topgs %>% pull(z_score_b1) %>% quantile(probs=0.9),
+           score.topgs %>% pull(z_score_b2) %>% quantile(probs=0.9),
+           score.topgs %>% pull(z_score_c) %>% quantile(probs=0.9))
+  comps =c( meds[1] > meds_assay[1] & p90s[1] > p90s_assay[1],
+            meds[2] > meds_assay[2] & p90s[2] > p90s_assay[2],
+            meds[3] > meds_assay[3] & p90s[3] > p90s_assay[3],
+            meds[4] > meds_assay[4] & p90s[4] > p90s_assay[4],
+            meds[5] > meds_assay[5] & p90s[5] > p90s_assay[5])
+  if(sum(comps) == 5) {
+    return(sum(meds - meds_assay))
+  } else {return(FALSE)}
+}
+
+sum(combo.out == FALSE)
+save(combo.out, file="../../Plots/new.combo.RData")
+save(combo.score, file="../../Plots/new.combo.score.RData")
+save(weights, file = "../../Plots/new.weights.RData")
+```
+
+### violin plot for the combo gene set
+```{r, warning=FALSE}
+#load("../../Plots/combo.RData")
+topgs = names(sort(combo.score[,which.max(combo.out)], decreasing = T)) %>% head(length(FINAL.assayg))
+intersect(topgs, FINAL.assayg)
+compgs = data.frame(combogs = topgs, assaygs = FINAL.assayg)
+
+sca1 = data.frame(apply(compgs, 2, function(x) {score_a$score_a1[match(x, score_a$GENE)]}))
+m.sca1 = melt(sca1)
+
+p_compa1 = ggplot(m.sca1, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Movability Score for Pathogenicity")+
+  scale_y_discrete(labels=c("combogs" = "Highest Combined Score", "assaygs" = "Assayed"))
+
+sca2 = data.frame(apply(compgs, 2, function(x) {score_a$score_a2[match(x, score_a$GENE)]}))
+m.sca2 = melt(sca2)
+p_compa2 = ggplot(m.sca2, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Movability Score for Benignity")+
+  scale_y_discrete(labels=c("combogs" = "Highest Combined Score", "assaygs" = "Assayed"))
+
+scb1 = data.frame(apply(compgs, 2, function(x) {score_b$sum_ppP_1[match(x, score_b$GENE)]}))
+m.scb1 = melt(scb1)
+p_compb1 = ggplot(m.scb1, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Relabeling Score for Benign Var.")+
+  scale_y_discrete(labels=c("combogs" = "Highest Combined Score", "assaygs" = "Assayed"))
+
+scb2 = data.frame(apply(compgs, 2, function(x) {score_b$sum_ppB_2[match(x, score_b$GENE)]}))
+m.scb2 = melt(scb2)
+p_compb2 = ggplot(m.scb2, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Relabeling Score for Pathogenic Var.")+
+  scale_y_discrete(labels=c("combogs" = "Highest Combined Score", "assaygs" = "Assayed"))
+
+scc1 = data.frame(apply(compgs, 2, function(x) {score_c$score_P[match(x, score_c$GENE)]}))
+m.scc1 = melt(scc1)
+p_compc1 = ggplot(m.scc1, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Uncertainty Score for ClinVar VUS and gnomAD Var.")+
+  scale_y_discrete(labels=c("combogs" = "Highest Combined Score", "assaygs" = "Assayed"))
+
+lay = rbind(c(rep(1,10), rep(2,7)),
+            c(rep(3,10), rep(4,7)),
+            c(rep(5,17)))
+
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/Compare_combo.pdf", 
+    width = 12,
+    height = 6) 
+grid.arrange(p_compa, p_compb, p_compc1, layout_matrix = lay)
+dev.off()
+```
+
+## motivation a only using ClinVar scores
+```{r}
+geneWassay = read.csv("../IGVFgenesets418/geneWassay.csv")
+assayg = intersect(genetab$genename, geneWassay$x)
+assayga = intersect(score_a$GENE, geneWassay$x)
+a_topgs = data.frame(assayg_sa1 = score_a$sum_ppP_clinv[match(assayga, score_a$GENE)],
+                     assayg_sa2 = score_a$sum_ppB_clinv[match(assayga, score_a$GENE)],
+                     unassg_sa1 = score_a %>% filter(! GENE %in% assayga) %>% 
+                     arrange(desc(sum_ppP_clinv)) %>% head(length(assayga)) %>% select(sum_ppP_clinv) %>%
+                     rename(unassg_sa1 = sum_ppP_clinv),
+                     unassg_sa2 = score_a %>% filter(! GENE %in% assayga) %>% 
+                     arrange(desc(sum_ppB_clinv)) %>% head(length(assayga)) %>% select(sum_ppB_clinv) %>%
+                     rename(unassg_sa2 = sum_ppB_clinv),
+                     topg_sa1 = score_a %>% arrange(desc(sum_ppP_clinv)) %>% 
+                     head(length(assayga)) %>% select(sum_ppP_clinv) %>%
+                     rename(topg_sa1 = sum_ppP_clinv),
+                     topg_sa2 = score_a %>% arrange(desc(sum_ppB_clinv)) %>% 
+                     head(length(assayga)) %>% select(sum_ppB_clinv) %>%
+                     rename(topg_sa2 = sum_ppB_clinv),
+                     randomg_sa1 = sample(score_a$sum_ppP_clinv, size = length(assayga)),
+                     randomg_sa2 = sample(score_a$sum_ppB_clinv, size = length(assayga)))
+
+a1_dendat = data.frame(Criteria=factor(rep(c("Assay_gene", "Unassay_gene", 
+                                             "Top_gene", "Random_gene"), each=length(assayga))),
+                       Scores =c(a_topgs$assayg_sa1, a_topgs$unassg_sa1, a_topgs$topg_sa1, a_topgs$randomg_sa1))
+a1_p = ggplot(a1_dendat, aes(x=Scores, color=Criteria)) + 
+  geom_density() + ggtitle("Score Density for Motivation a1") +ylim(0,0.03)
+a1_p
+
+a2_dendat = data.frame(Criteria=factor(rep(c("Assay_gene", "Unassay_gene", 
+                                             "Top_gene", "Random_gene"), each=length(assayga))),
+                       Scores =c(a_topgs$assayg_sa2, a_topgs$unassg_sa2, a_topgs$topg_sa2, a_topgs$randomg_sa2))
+a2_p = ggplot(a2_dendat, aes(x=Scores, color=Criteria)) + 
+  geom_density() + ggtitle("Score Density for Motivation a2")
+a2_p
+```
+
+## Compare to Friz prioritize paper
+```{r}
+library(VennDiagram)
+library(RColorBrewer)
+library(reshape)
+library(gridExtra)
+
+vareff_tab = read.csv("G://My Drive/UW/2021 AU/IGVF/analysis/outputGene_inLit/complete_prio_gene_sysVarEffMap_paper.csv")
+#vareff_tab = read.csv("G:/My Drive/UW/2021 AU/IGVF/analysis/outputGene_inLit/prio_gene_sysVarEffMap_paper.csv")
+daisg = intersect(vareff_tab$DAIS, FINAL.gene)
+length(daisg)
+togs94 = names(sort(combo.score[,which.max(combo.out)], decreasing = T)) %>% head(length(daisg))
+
+ts_a1 = score_a %>% arrange(desc(score_a1)) %>% head(length(daisg)) %>% pull(score_a1) 
+com_a1 = score_a %>% filter(GENE %in% togs94) %>% pull(score_a1)
+#sca1 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_a$score_a1[match(x, score_a$GENE)]}), ts_a1, com_a1))
+
+sca1 = data.frame(ts_a1, com_a1, DAIS = score_a$score_a1[match(daisg, score_a$GENE)] )
+m.sca1 = melt(sca1)
+#levels(m.sca1$variable) = c("ts_a1", "com_a1", "DAIS")
+
+#friz_compa1 = list(c("com_a1" , "Unique_ClinVar_VUS"),c("com_a1", "MARWIS"), c("com_a1", "DAIS"))
+friz_compa1 = list(c("com_a1" , "DAIS"),
+                  c("ts_a1", "DAIS"))
+
+p_compa1 = ggbetweenstats(
+  data  = m.sca1,
+  x     = variable,
+  y     = value, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  ylab = "Movability-to P Score", xlab="",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12)) +
+  stat_compare_means(comparisons = friz_compa1,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4) +
+  scale_x_discrete(labels=c("ts_a1" = "Highest Movability", "com_a1" = "Highest Combined Score", "DAIS" = "DAIS"))
+
+friz_compa2 = list(c("com_a2" , "DAIS"),
+                  c("ts_a2", "DAIS"))
+ts_a2 = score_a %>% arrange(desc(score_a2)) %>% head(length(daisg)) %>% pull(score_a2)
+com_a2 = score_a %>% filter(GENE %in% togs94) %>% pull(score_a2)
+#sca2 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_a$score_a2[match(x, score_a$GENE)]}), ts_a2, com_a2))
+
+sca2 = data.frame(ts_a2, com_a2,DAIS = score_a$score_a2[match(daisg, score_a$GENE)])
+m.sca2 = melt(sca2)
+#levels(m.sca2$variable) = c("ts_a2", "com_a2", "DAIS")
+
+p_compa2 = ggbetweenstats(
+  data  = m.sca2,
+  x     = variable,
+  y     = value, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  xlab = "",
+  ylab = "Movability-to-B Score",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_blank()) +
+  stat_compare_means(comparisons = friz_compa2,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4)
+#+scale_x_discrete(limits = c("ts_a2", "com_a2", "DAIS"))
+
+friz_compb1 = list(c("com_b1" , "DAIS"),
+                  c("ts_b1", "DAIS"))
+
+ts_b1 = score_b %>% arrange(desc(sum_ppP_1)) %>% head(length(daisg)) %>% pull(sum_ppP_1)
+com_b1 = score_b %>% filter(GENE %in% togs94) %>% pull(sum_ppP_1)
+#scb1 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_b$sum_ppP_1[match(x, score_b$GENE)]}), ts_b1, com_b1))
+
+scb1 = data.frame(ts_b1, com_b1, DAIS = score_b$sum_ppP_1[match(daisg, score_a$GENE)] )
+m.scb1 = melt(scb1)
+#levels(m.scb1$variable) = c("ts_b1", "com_b1", "DAIS")
+
+p_compb1 = ggbetweenstats(
+  data  = m.scb1,
+  x     = variable,
+  y     = value, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  ylab = "Correction-of-B Score", xlab = "",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_blank()) +
+  stat_compare_means(comparisons = friz_compb1,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4) 
+#+  scale_x_discrete(limits = c("ts_b1", "com_b1", "DAIS"))
+
+friz_compb2 = list(c("com_b2" , "DAIS"),
+                  c("ts_b2", "DAIS"))
+ts_b2 = score_b %>% arrange(desc(sum_ppB_2)) %>% head(length(daisg)) %>% pull(sum_ppB_2)
+com_b2 = score_b %>% filter(GENE %in% togs94) %>% pull(sum_ppB_2)
+#scb2 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_b$sum_ppB_2[match(x, score_b$GENE)]}), ts_b2, com_b2))
+
+scb2 = data.frame(ts_b2, com_b2, DAIS = score_b$sum_ppB_2[match(daisg, score_b$GENE)] )
+m.scb2 = melt(scb2)
+#levels(m.scb2$variable) = c("ts_b2", "com_b2", "DAIS")
+
+p_compb2 = ggbetweenstats(
+  data  = m.scb2,
+  x     = variable,
+  y     = value, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  ylab = "Correction-of-P Score", xlab = "",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12)) +
+  stat_compare_means(comparisons = friz_compb2,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4)+
+  scale_x_discrete(labels=c("com_b2" = "Highest Combined Score","ts_b2" = "Highest Correction","DAIS" = "DAIS"))
+
+friz_compc1 = list(c("com_c1" , "DAIS"),
+                  c("ts_c1", "DAIS"))
+ts_c1 = score_c %>% arrange(desc(score_P)) %>% head(length(daisg)) %>% pull(score_P)
+com_c1 = score_c %>% filter(GENE %in% togs94) %>% pull(score_P)
+#scc1 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_c$score_P[match(x, score_c$GENE)]}), ts_c1, com_c1))
+
+scc1 = data.frame(ts_c1, com_c1, DAIS = score_c$score_P[match(daisg, score_c$GENE)] )
+m.scc1 = melt(scc1)
+#levels(m.scc1$variable) = c("ts_c1", "com_c1", "DAIS")
+
+p_compc1 = ggbetweenstats(
+  data  = m.scc1,
+  x     = variable,
+  y     = value, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  ylab = "Uncertainty Score", 
+  xlab = "",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12)) +
+  stat_compare_means(comparisons = friz_compc1,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4) +
+  scale_x_discrete(labels=c("com_c1" = "Highest Combined Score","ts_c1" = "Highest Uncertainty", "DAIS" = "DAIS")) 
+
+
+p_compa = grid.arrange(p_compa1, p_compa2, 
+                       layout_matrix=rbind(c(rep(1,10), rep(2,7.5)),            #                                c(rep(1,10), rep(2,7.5)),
+                                           c(rep(1,10), rep(2,7.5))))
+p_compb = grid.arrange(p_compb2, p_compb1, 
+                       layout_matrix=rbind(c(rep(1,10), rep(2,7.5)), 
+                                           c(rep(1,10), rep(2,7.5)),
+                                           c(rep(1,10), rep(2,7.5))))
+
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/FINAL.Compare_Friz.pdf", width = 12,height = 6)
+ggarrange(p_compa, p_compb, p_compc1, nrow = 3, labels = c("A","B","C"))
+dev.off()
+
+
+#lay = rbind(c(rep(1,10), rep(2,7)),
+#            c(rep(3,10), rep(4,7)),
+#            c(rep(5,17)))
+#pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/FINAL.Compare_Friz.pdf", width = 12,height = 6) 
+#grid.arrange(p_compa1, p_compa2, p_compb2, p_compb1, p_compc1, layout_matrix = lay)
+#dev.off()
+```
+
+### Friz paper pval calc
+```{r}
+getwilp(m.sca1, comp = friz_compa1)
+```
+
+###new violin plots A
+```{r new violin plots A, warning=FALSE, message=FALSE}
+#load("/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.combo.RData")
+#load("/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.combo.score.RData")
+#load("/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.weights.RData")
+topgs = names(sort(combo.score[,which.max(combo.out)], decreasing = T)) %>% head(length(FINAL.assayg))
+intersect(topgs, FINAL.assayg)
+compgs = data.frame(combogs = topgs, assaygs = FINAL.assayg)
+
+f.a1dendat = data.frame(Criteria=factor(rep(c("Assayed", "Highest Movability", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants", "Highest Combined Score" ),each=length(FINAL.assayg)), 
+                                       levels = rev(c("Random", "Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants", "Highest Combined Score","Highest Movability"))),
+                       Scores =c(a_topgs$assayg_sa1, a_topgs$topg_sa1, a_topgs$randomg_sa1, a_topgs$pubcntg_sa1, a_topgs$vuspg_sa1, a_topgs$vusgnomg_sa1, score_a$score_a1[match(topgs, score_a$GENE)]))
+
+a1_compare = list(c("Highest Movability", "Random"),
+                  c("Highest Movability", "Assayed"), 
+                  c("Highest Movability", "Highest Publications"), 
+                  c("Highest Movability", "Highest Unlabeled Variants"),
+                  c("Highest Movability", "Highest Non-benign Variants"),
+                  c("Highest Movability", "Highest Combined Score"),
+                  c( "Highest Combined Score", "Assayed"))
+
+a2_compare = list(c("Highest Combined Score", "Random"),
+                  c("Highest Combined Score", "Assayed"), 
+                  c("Highest Combined Score", "Highest Publications"), 
+                  c("Highest Combined Score", "Highest Unlabeled Variants"),
+                  c("Highest Combined Score", "Highest Non-benign Variants"),
+                  c( "Highest Movability", "Highest Combined Score"),
+                  c( "Highest Movability", "Assayed"))
+
+pa1 = ggbetweenstats(
+  data  = f.a1dendat,
+  x     = Criteria,
+  y     = Scores, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  #ylab = "Exp. No. of VUS and gnomAD Var. Move to Pathogenic"
+  ylab = "Movability-to-P Score",
+  xlab = "",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12)) +
+  stat_compare_means(comparisons = a2_compare,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4) +
+  scale_x_discrete(labels=levels(f.a1dendat$Criteria))
+
+f.a2dendat = data.frame(Criteria=factor(rep(c("Assayed", "Highest Movability", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants", "Highest Combined Score" ),each=length(FINAL.assayg)), 
+                                       levels = rev(c("Random", "Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants", "Highest Combined Score","Highest Movability"))),
+                       Scores =c(a_topgs$assayg_sa2, a_topgs$topg_sa2, a_topgs$randomg_sa2, a_topgs$pubcntg_sa2, a_topgs$vuspg_sa2, a_topgs$vusgnomg_sa2, score_a$score_a2[match(topgs, score_a$GENE)]))
+
+pa2 = ggbetweenstats(
+  data  = f.a2dendat,
+  x     = Criteria,
+  y     = Scores, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  xlab = "", ylab = "Movability-to-B Score",
+  centrality.point.args = list(size = 3,color = "darkred"),
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_blank()) +
+  stat_compare_means(comparisons = a2_compare,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4)
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.violA2.pdf", width = 13,height = 6) 
+pa = grid.arrange(pa1, pa2, layout_matrix=rbind(c(rep(1,10), rep(2,7.5)), 
+                                                 c(rep(1,10), rep(2,7.5)),
+                                                 c(rep(1,10), rep(2,7.5))))
+dev.off()
+
+```
+
+```{r new violin plots B, warning=FALSE, message=FALSE}
+f.b1dendat = data.frame(Criteria=factor(rep(c("Assayed", "Highest Correction", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants", "Highest Combined Score" ),each=length(FINAL.assayg)), 
+                                       levels = rev(c("Random", "Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants", "Highest Combined Score","Highest Correction"))),
+                        Scores =c(b_topgs$assayg_sb1, b_topgs$topg_sb1, b_topgs$randomg_sb1, b_topgs$pubcntg_sb1, b_topgs$vuspg_sb1, b_topgs$vusgnomg_sb1, score_b$sum_ppP_1[match(topgs, score_b$GENE)]))
+
+b1_compare = lapply(a1_compare, function(x) gsub("Movability", "Correction",x))
+
+b2_compare = lapply(a2_compare, function(x) gsub("Movability", "Correction",x))
+
+f.b2dendat = data.frame(Criteria=f.b1dendat$Criteria,
+                        Scores =c(b_topgs$assayg_sb2, b_topgs$topg_sb2, b_topgs$randomg_sb2, b_topgs$pubcntg_sb2, b_topgs$vuspg_sb2, b_topgs$vusgnomg_sb2, score_b$sum_ppB_2[match(topgs, score_b$GENE)]))
+
+
+pb1 = ggbetweenstats(
+  data  = f.b2dendat,
+  x     = Criteria,
+  y     = Scores, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  ylab = "Correction-of-P Score",
+  xlab = "",
+  violin.args = list(width = 1, alpha = 0.2),
+  centrality.point.args = list(size = 3,color = "darkred")
+) + coord_flip() +
+  theme(text = element_text(size = 12)) +
+  stat_compare_means(comparisons = b2_compare,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4)+
+  scale_x_discrete(labels=levels(f.b2dendat$Criteria))
+
+pb2 = ggbetweenstats(
+  data  = f.b1dendat,
+  x     = Criteria,
+  y     = Scores, type = "nonparametric",
+  centrality.plotting = F,
+  outlier.tagging = FALSE, 
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  ylab = "Correction-of-B Score",
+  xlab = "",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_blank()) +
+  stat_compare_means(comparisons = b2_compare,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4) 
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.violB2.pdf", width = 13,height = 6) 
+pb = grid.arrange(pb1, pb2, layout_matrix=rbind(c(rep(1,10), rep(2,7.5)), 
+                                                 c(rep(1,10), rep(2,7.5)),
+                                                 c(rep(1,10), rep(2,7.5))))
+dev.off()
+```
+
+```{r new violin plots C, warning=FALSE, message=FALSE}
+f.c1dendat = data.frame(Criteria=factor(rep(c("Assayed", "Highest Uncertainty", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants", "Highest Combined Score" ),each=length(FINAL.assayg)), 
+                                       levels = rev(c("Random", "Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants", "Highest Combined Score","Highest Uncertainty"))),
+                        Scores =c(c_topgs1$assayg_sc1, c_topgs1$topg_sc1, c_topgs1$randomg_sc1, c_topgs1$pubcntg_sc1, c_topgs1$vuspg_sc1, c_topgs1$vusgnomg_sc1, score_c$score_P[match(topgs, score_c$GENE)]))
+
+c1_compare = lapply(a1_compare, function(x) gsub("Movability", "Uncertainty",x))
+
+c2_compare = lapply(a2_compare, function(x) gsub("Movability", "Uncertainty",x))
+
+pc1 = ggbetweenstats(
+  data  = f.c1dendat,
+  x     = Criteria,
+  y     = Scores, type = "nonparametric",
+  outlier.tagging = FALSE, 
+  centrality.plotting = F,
+  pairwise.comparisons = FALSE,
+  results.subtitle = FALSE,
+  centrality.point.args = list(size = 3,color = "darkred"),
+  ylab = "Uncertainty Score",
+  xlab = "",
+  violin.args = list(width = 1, alpha = 0.2)
+) + coord_flip() +
+  theme(text = element_text(size = 12)) +
+  stat_compare_means(comparisons = c2_compare,
+                     method = "wilcox.test",
+                     method.args = list(alternative = "greater"),
+                     paired =FALSE,
+                     symnum.args =
+                       list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), 
+                            symbols = c("****", "***", "**", "*", "NS")),
+                     size = 4) +
+  scale_x_discrete(labels=levels(f.c1dendat$Criteria))
+
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.violC2.pdf", width = 12,height = 6)
+#grid.arrange(pa1, pa2, pb1, pb2, pc1, layout_matrix = lay)
+pc1
+dev.off()
+```
+
+```{r}
+library(ggpubr)
+pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/FINAL.combo.viol.pdf", width = 13,height = 10)
+ggarrange(pa, pb, pc1, nrow = 3, labels = c("A","B","C"))
+dev.off()
+```
+
+### get pvalues for violin ABC
+```{r}
+wilcox.test(x=f.c1dendat$Scores[which(f.c1dendat$Criteria == "Random")], y=f.c1dendat$Scores[which(f.c1dendat$Criteria == "Highest Publications")], alternative = "greater")$p.value
+
+
+getwilp = function(data = f.a1dendat, comp = a2_compare, direct = "greater"){
+  wilpval = list()
+  for(i in 1:length(comp)){
+    wilpval[[i]] = wilcox.test(x=data$Scores[which(data$Criteria == comp[[i]][1])], y=data$Scores[which(data$Criteria == comp[[i]][2])], alternative = direct)$p.value}
+  wilpval = unlist(wilpval)
+  names(wilpval) = unlist(lapply(a2_compare, function(x) paste0(x[1],"_VS_",x[2])))
+  return(wilpval)
+}
+
+getwilp()
+getwilp(f.a2dendat)
+getwilp(f.b1dendat, comp = b1_compare)
+getwilp(f.b2dendat, comp = b2_compare)
+getwilp(f.c1dendat, comp = c1_compare)
+```
+
+###get top genes for g-profiler go enrichment
+```{r}
+write.table(final.geneset, file= "../g_profiler_output/background.txt", row.names = F, col.names = F, quote = F)
+write.table(togs100, file = "../g_profiler_output/combo100.txt", row.names = F, col.names = F, quote = F)
+write.table(vareff_tab$DAIS, file = "../g_profiler_output/DAIS.txt", row.names = F, col.names = F, quote = F)
+
+
+
+#write.csv(score_a %>% arrange(desc(score_a1)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_a1.csv", row.names = F, quote = F)
+#write.csv(score_a %>% arrange(desc(score_a2)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_a2.csv", row.names = F, quote = F)
+
+#write.csv(score_b %>% arrange(desc(sum_ppP_1)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_b1.csv", row.names = F, quote = F)
+#write.csv(score_b %>% arrange(desc(sum_ppB_2)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_b2.csv", row.names = F, quote = F)
+
+#write.csv(score_c1 %>% arrange(desc(score_P)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_c1.csv", row.names = F, quote = F)
+#write.csv(score_c2 %>% arrange(desc(score_P)) %>% head(50) %>% pull(GENE), file="../topgenes/tg_c2.csv", row.names = F, quote = F)
+```
+
+### venn diagram
+```{r}
+library(VennDiagram)
+library(RColorBrewer)
+
+venn.diagram(
+  x = list(togs100, vareff_tab$DAIS, FINAL.assayg),
+  category.names = c("With Top Combnation Scores", "DAIS", "Assayed Genes"),
+  filename = '/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.commSet.png',
+  output = TRUE ,
+          imagetype="png" ,
+          height = 480 , 
+          width = 880 , 
+          resolution = 300,
+          compression = "lzw",
+          # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = brewer.pal(3, "Pastel2"),
+        
+        # Numbers
+        cex = .6,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Set names
+        cat.cex = 0.6,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-27, 27, 135),
+        cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans",
+        rotation = 1
+        )
+```
+
+### TABLE: top 20 genes with highest combo scores
+```{r}
+togs20 = names(sort(combo.score[,which.max(combo.out)], decreasing = T)) %>% head(20)
+
+intersect(togs20, FINAL.assayg)
+intersect(togs20, daisg)
+
+miscnt = misrevel %>% filter(GENE %in% togs20) %>% group_by(GENE) %>% 
+  summarise(missense_cnt = n())
+t20scr = sort(combo.score[,which.max(combo.out)], decreasing = T) %>% head(20)
+togs20.tab = new_varcnt %>% filter(GENE %in% togs20) %>% 
+  mutate(missense_cnt = miscnt$missense_cnt[match(GENE, miscnt$GENE)],
+         Combination_Score = t20scr[match(GENE, names(t20scr))],
+         DAIS_rank = vareff_tab$Rank[match(GENE, vareff_tab$DAIS)]) %>% 
+  arrange(desc(Combination_Score)) %>%
+  mutate(rank = seq(1,20),
+         Total = plp + blb + vus +gnomad_cnt) %>%
+  #select(rank, GENE, Combination_Score, missense_cnt, plp, blb, vus, gnomad_cnt) %>%
+  select(rank, GENE, DAIS_rank, plp, blb, vus, gnomad_cnt, Total) %>%
+  dplyr::rename(#'Total Missense' = missense_cnt, 
+         'P/LP' = plp,
+         'B/LB' = blb, 'VUS' = vus, 
+         'gnomAD missense' = gnomad_cnt)
+         #'Combination Score'=Combination_Score)
+
+library(xtable)
+tab = xtable(togs20.tab[-1], caption='Number of missense variants in ClinVar and gnomAD',align=c("|c","|c","|c","|c","|c","|c","|c","|c|"))
+print(tab,file="/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/new.table1.tex",append=T,table.placement = "h",
+ caption.placement="bottom", hline.after=seq(from=-1,to=nrow(tab),by=1))
+```
+
+## OLD Compare to Friz prioritize paper
+```{r}
+library(VennDiagram)
+library(RColorBrewer)
+library(reshape)
+library(gridExtra)
+
+#vareff_tab = read.csv("/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/analysis/outputGene_inLit/prio_gene_sysVarEffMap_paper.csv")
+vareff_tab = read.csv("G:/My Drive/UW/2021 AU/IGVF/analysis/outputGene_inLit/prio_gene_sysVarEffMap_paper.csv")
+
+#ts_a1 = score_a %>% arrange(desc(score_a1)) %>% head(50) %>% pull(score_a1) 
+ts_a1 = score_a %>% filter(GENE %in% topgs) %>% pull(score_a1)
+sca1 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_a$score_a1[match(x, score_a$GENE)]}), ts_a1))
+m.sca1 = melt(sca1)
+
+p_compa1 = ggplot(m.sca1, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Movability Score for Pathogenicity")+
+  scale_y_discrete(labels=c("ts_a1" = "With Highest Movability Score", "MARWIS" = "MARWIS",
+                              "DAIS" = "DAIS", "Unique_ClinVar_VUS" = "Unique ClinVar VUS"))
+
+#ts_a2 = score_a %>% arrange(desc(score_a2)) %>% head(50) %>% pull(score_a2)
+ts_a2 = score_a %>% filter(GENE %in% topgs) %>% pull(score_a2)
+sca2 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_a$score_a2[match(x, score_a$GENE)]}), ts_a2))
+m.sca2 = melt(sca2)
+p_compa2 = ggplot(m.sca2, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Movability Score for Benignity")+
+  scale_y_discrete(labels=c("ts_a2" = "With Highest Movability Score", "MARWIS" = "MARWIS",
+                              "DAIS" = "DAIS", "Unique_ClinVar_VUS" = "Unique ClinVar VUS"))
+
+#ts_b1 = score_b %>% arrange(desc(sum_ppP_1)) %>% head(50) %>% pull(sum_ppP_1)
+ts_b1 = score_b %>% filter(GENE %in% topgs) %>% pull(sum_ppP_1)
+scb1 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_b$sum_ppP_1[match(x, score_b$GENE)]}), ts_b1))
+m.scb1 = melt(scb1)
+p_compb1 = ggplot(m.scb1, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Relabeling Score for Benign Var.")+
+  scale_y_discrete(labels=c("ts_b1" = "With Highest Relabeling Score", "MARWIS" = "MARWIS",
+                              "DAIS" = "DAIS", "Unique_ClinVar_VUS" = "Unique ClinVar VUS"))
+
+#ts_b2 = score_b %>% arrange(desc(sum_ppB_2)) %>% head(50) %>% pull(sum_ppB_2)
+ts_b2 = score_b %>% filter(GENE %in% topgs) %>% pull(sum_ppB_2)
+scb2 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_b$sum_ppB_2[match(x, score_b$GENE)]}), ts_b2))
+m.scb2 = melt(scb2)
+p_compb2 = ggplot(m.scb2, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Relabeling Score for Pathogenic Var.")+
+  scale_y_discrete(labels=c("ts_b2" = "With Highest Relabeling Score", "MARWIS" = "MARWIS",
+                              "DAIS" = "DAIS", "Unique_ClinVar_VUS" = "Unique ClinVar VUS"))
+
+#ts_c1 = score_c1 %>% arrange(desc(score_P)) %>% head(50) %>% pull(score_P)
+ts_c1 = score_c %>% filter(GENE %in% topgs) %>% pull(score_P)
+scc1 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) {score_c$score_P[match(x, score_c$GENE)]}), ts_c1))
+m.scc1 = melt(scc1)
+p_compc1 = ggplot(m.scc1, aes(x=value, y=variable, fill = variable)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Uncertainty Score for ClinVar VUS")+
+  scale_y_discrete(labels=c("ts_c1" = "With Highest Uncertainty Score", "MARWIS" = "MARWIS",
+                              "DAIS" = "DAIS", "Unique_ClinVar_VUS" = "Unique ClinVar VUS"))
+
+lay = rbind(c(rep(1,10), rep(2,7)),
+            c(rep(3,10), rep(4,7)),
+            c(rep(5,17)))
+#pdf(file = "/Volumes/GoogleDrive/My Drive/UW/2021 AU/IGVF/Plots/Compare_Friz.pdf", width = 12,height = 6) 
+grid.arrange(p_compa1, p_compa2, p_compb1, p_compb2, p_compc1, layout_matrix = lay)
+#dev.off()
+```
+
+
+```{r discard codes}
+
+#assayga = intersect(score_a$GENE, geneWassay$x) ## 72 genes 
+#comp_score_a = score_a
+#score_a = comp_score_a %>% filter(len >= minlen & len <= maxlen)
+#new_varcnt = merge(score_a, score_b, by="GENE", all = T) %>% 
+#  select(GENE, vus, gnomAD_cnt, benign_cnt, pathogenic_cnt) %>% 
+#  replace(is.na(.), 0) %>% 
+#  mutate(vus_P = vus+pathogenic_cnt, vus_gnom = vus+gnomAD_cnt) 
+#a1_p = ggplot(a1_dendat, aes(x=Scores, color=Criteria)) + 
+#  geom_density() + ggtitle("Score Density for Motivation a1")
+#a2_p = ggplot(a2_dendat, aes(x=Scores, color=Criteria)) + 
+ # geom_density() + ggtitle("Score Density for Motivation a2")
+
+#grid.arrange(a1_p,a2_p,nrow=2)
+
+
+c_topgs2 = data.frame(assayg_sc2 = score_c2$score_P[match(assaygc2, score_c2$GENE)],
+                      topg_sc2 = score_c2 %>% arrange(desc(score_P)) %>% 
+                       head(length(assaygc2)) %>% select(score_P) %>%
+                       rename(topg_sc2 = score_P),
+                     randomg_sc2 = sample(score_c2$score_P, size = length(assaygc2)),
+                     pubcntg_sc2 = score_c2$score_P[match(tp2$symbol, score_c2$GENE)],
+                      vuspg_sc2 = score_c2$score_P[match(tvusp2$GENE, score_c2$GENE)],
+                      vusgnomg_sc2 = score_c2$score_P[match(tvusg2$GENE, score_c2$GENE)])
+
+c2_pvio = ggplot(c2_dendat, aes(x=Scores, y=Criteria, fill = Criteria)) + 
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width=0.03)+
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(fill = FALSE) + ylab("")+
+  xlab("Uncertainty Score for gnomAD Var.")
+
+#c1_p = ggplot(c1_dendat, aes(x=Scores, color=Criteria)) + 
+#  geom_density() + 
+#  ggtitle("Score Density for Motivation c1 (ClinVar VUS)")
+
+c2_dendat = data.frame(Criteria=factor(rep(c("Assayed", "With Highest Uncertainty Score", "Random","Highest Publications", "Highest Non-benign Variants", "Highest Unlabeled Variants"), each=length(assaygc2)),
+                                       levels = rev(c("Assayed","Highest Publications","Highest Unlabeled Variants","Highest Non-benign Variants","With Highest Uncertainty Score","Random"))),
+                       Scores =c(c_topgs2$assayg_sc2, c_topgs2$topg_sc2, c_topgs2$randomg_sc2, c_topgs2$pubcntg_sc2, c_topgs2$vuspg_sc2, c_topgs2$vusgnomg_sc2))
+#c2_p = ggplot(c2_dendat, aes(x=Scores, color=Criteria)) + 
+#  geom_density() + ggtitle("Score Density for Motivation c2 (gnomAD variants)")
+#grid.arrange(c1_p,c2_p,nrow=2)
+
+venn.diagram(
+  x = list(
+    ts_a1, vareff_tab$Unique_ClinVar_VUS,
+    vareff_tab$MARWIS, vareff_tab$DAIS
+    ),
+  category.names = c("Movability score 1",
+                     "Unique_ClinVar_VUS", "MARWIS", "DAIS"),
+  filename = '../../Plots/commSet.png',
+  output = TRUE ,
+          imagetype="png" ,
+          height = 480 , 
+          width = 880 , 
+          resolution = 300,
+          lwd = 1,
+          col=c(brewer.pal(4,"Set3")),
+          fill = c(alpha("#8DD3C7",0.3), alpha('#FFFFB3',0.3), alpha('#BEBADA',0.3), alpha('#FB8072',0.3)),
+          cex = 0.5,
+          fontfamily = "sans",
+          cat.cex = 0.3,
+          cat.default.pos = "outer",
+          #cat.pos = c(-27, 27, 135),
+          #cat.dist = c(0.055, 0.055, 0.085),
+          #cat.fontfamily = "sans",
+          #cat.col = c("#440154ff", '#21908dff', '#fde725ff'),
+          #rotation = 1
+        )
+
+
+assaygc2 = intersect(score_c2$GENE, geneWassay$x)
+c2_topgs = data.frame(assayg_sc1 = score_c2$score_P[match(assaygc2, score_c2$GENE)],
+                     assayg_sc2 = score_c2$score_B[match(assaygc2, score_c2$GENE)],
+                     unassg_sc1 = score_c2 %>% filter(! GENE %in% assaygc2) %>% 
+                     arrange(desc(score_P)) %>% head(length(assaygc2)) %>% select(score_P) %>%
+                     rename(unassg_sc1 = score_P),
+                     unassg_sc2 = score_c2 %>% filter(! GENE %in% assaygc2) %>% 
+                     arrange(desc(score_B)) %>% head(length(assaygc2)) %>% select(score_B) %>%
+                     rename(unassg_sc2 = score_B),
+                     topg_sc1 = score_c2 %>% arrange(desc(score_P)) %>% 
+                     head(length(assaygc2)) %>% select(score_P) %>%
+                     rename(topg_sc1 = score_P),
+                     topg_sb2 = score_c2 %>% arrange(desc(score_B)) %>% 
+                     head(length(assaygc2)) %>% select(score_B) %>%
+                     rename(topg_sb2 = score_B),
+                     randomg_sc1 = sample(score_c2$score_P, size = length(assaygc2)),
+                     randomg_sb2 = sample(score_c2$score_B, size = length(assaygc2)))
+
+
+#ts_c2 = score_c2 %>% arrange(desc(score_P)) %>% head(50) %>% pull(score_P)
+#scc2 = data.frame(cbind(apply(vareff_tab[,-1], 2, function(x) #{comp_score_c2$score_P[match(x, comp_score_c2$GENE)]}), ts_c2))
+#m.scc2 = melt(scc2)
+#p_compc2 = ggplot(m.scc2, aes(x=value, y=variable, fill = variable)) + 
+#  geom_violin(trim = FALSE)+
+#  geom_boxplot(width=0.03)+
+#  theme(panel.grid.major.y = element_blank(),
+#        panel.grid.minor.y = element_blank(),
+#        axis.text.y = element_blank()) +
+#  guides(fill = FALSE) + ylab("")+
+#  xlab("Uncertainty Score for gnomAD Var.")+
+#  scale_y_discrete(labels=c("ts_c2" = "With Highest Uncertainty Score", #"MARWIS" = "MARWIS",
+#                              "DAIS" = "DAIS", "Unique_ClinVar_VUS" = #"Unique ClinVar VUS"))
+
+
+
+ggarrange(p_compa1, p_compa2, p_compb1, p_compb2, p_compc1, widths = c(10,7,10,7,20), ncol = 2, nrow = 3)
+
+library("cowplot")
+ggdraw() +
+  draw_plot(p_compa1, x = 0, y = .5, width = .5, height = .5) +
+  draw_plot(p_compa2, x = .5, y = .5, width = .5, height = .5) +
+  draw_plot(p_compb1, x = 0, y = 0, width = 1, height = 0.5) +
+  draw_plot(p_compb2, x = 0, y = 0, width = 1, height = 0.5) +
+  draw_plot(p_compc1, x = 0, y = 0, width = 1, height = 0.5) +
+  draw_plot_label(label = c("A", "B", "C"), size = 15,
+                  x = c(0, 0.5, 0), y = c(1, 1, 0.5))
+
+library(grid)
+# Move to a new page
+grid.newpage()
+# Create layout : nrow = 3, ncol = 2
+pushViewport(viewport(layout = grid.layout(nrow = 3, ncol = 2)))
+define_region <- function(row, col){
+  viewport(layout.pos.row = row, layout.pos.col = col)
+} 
+# Arrange the plots
+print(p_compa1, vp = define_region(row = 1, col = 1))  
+print(p_compa2, vp = define_region(row = 1, col = 2))   
+print(p_compb1, vp = define_region(row = 2, col = 1))
+print(p_compb2, vp = define_region(row = 2, col = 2))
+print(p_compc1, vp = define_region(row = 3, col = 1:2))
+```
