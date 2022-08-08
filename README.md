@@ -17,5 +17,5 @@ This repo contains:
 
   1. Supp. Table 1: master gene table 
   2. Supp. Figure 1: Functional enrichment analysis of the top 100 genes ranked by the optimal weighted combined scores. A. 36 significantly enriched GO terms (12 BP, 10 CC, 14 MF), B. 40 most significantly enriched HP terms. The point size indicates the number of genes found in both the functional terms and top 100 genes. GO:BP, GO biological process; GO:CC, GO cellular component; GO:MF, GO molecular function; HP, human phenotype. 
-  3. gProfiler_output.csv: Functional enrichment analysis output. 
+  3. gProfiler_output.csv: detailed information about the functional enrichment analysis output presented in Supp. Figure 1. Column definition: source: the source of enrichment; term_name: the name of the enriched term;	term_id: enriched term ID; adjusted_p_value: enriched p-value adjusted for multiple hypothesis testing;	negative_log10_of_adjusted_p_value: -log10(adj p-value); term_size: number of genes found in that term;	query_size: number of input genes for query;	intersection_size	effective_domain_size	intersections
  
