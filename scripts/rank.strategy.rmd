@@ -18,10 +18,10 @@ library(ggpubr)
 ##data read in 
 ```{r data read in }
 setwd("analysis path")
-genetab = read.csv("./update.revel.final.tab.gene.csv")
-misrevel = readRDS("./misrevel.RDS")
-lppv = read.table(".data/REVEL_local_posteriors.txt", header = TRUE)
-gnomadmis = read.table("./gnomad.mis.revel.tab",header = F) %>%
+genetab = read.csv("./data/genetab.csv")
+misrevel = readRDS("./data/misrevel.RDS")
+lppv = read.table("./data/REVEL_local_posteriors.txt", header = TRUE)
+gnomadmis = read.table("./data/gnomad.mis.revel.tab",header = F) %>%
   dplyr::rename(CHR = V1, POS= V2, REF = V3, ALT = V4, GENE = V5, REVEL = V6)
 gnomadmis$GENE = as.character(gnomadmis$GENE)
 gnomadmis$GENE[grep("AARS", gnomadmis$GENE)] = "AARS1"
@@ -34,7 +34,7 @@ pp_gnomad = uni_gnomadmis %>% na.omit() %>%
             sum_ppP_gnom = sum(ppP_gnom, na.rm = T),
             sum_ppB_gnom = sum(ppB_gnom, na.rm = T))
 
-g2pubcnt = read.table("./g2pubcnt.wID", header = 1, sep = "\t")
+g2pubcnt = read.table("./data/g2pubcnt.wID", header = 1, sep = "\t")
 
 tmp_cnt = misrevel %>% na.omit() %>% group_by(GENE, mergCLINSIG) %>% tally()
 new_varcnt = spread(tmp_cnt, key = mergCLINSIG, value = n) %>% replace(is.na(.),0) %>%
@@ -53,7 +53,7 @@ length(final.geneset)
 
 ##the number of genes that have length within the assayed genes 
 ```{r}
-geneWassay = read.csv("./geneWassay.csv")
+geneWassay = read.csv("./data/geneWassay.csv")
 assayg = intersect(genetab$genename, geneWassay$x)
 minlen = min(genetab %>% filter(genename %in% assayg) %>% select(Len.of.Protein), na.rm = T) #101
 maxlen = max(genetab %>% filter(genename %in% assayg) %>% select(Len.of.Protein), na.rm = T) #3418
@@ -461,7 +461,7 @@ dev.off()
 
 ## motivation a only using ClinVar scores
 ```{r}
-geneWassay = read.csv("../IGVFgenesets418/geneWassay.csv")
+geneWassay = read.csv("./data/geneWassay.csv")
 assayg = intersect(genetab$genename, geneWassay$x)
 assayga = intersect(score_a$GENE, geneWassay$x)
 a_topgs = data.frame(assayg_sa1 = score_a$sum_ppP_clinv[match(assayga, score_a$GENE)],
@@ -503,8 +503,7 @@ library(RColorBrewer)
 library(reshape)
 library(gridExtra)
 
-vareff_tab = read.csv("G://My Drive/UW/2021 AU/IGVF/analysis/outputGene_inLit/complete_prio_gene_sysVarEffMap_paper.csv")
-#vareff_tab = read.csv("G:/My Drive/UW/2021 AU/IGVF/analysis/outputGene_inLit/prio_gene_sysVarEffMap_paper.csv")
+vareff_tab = read.csv("./data/complete_prio_gene_sysVarEffMap_paper.csv")
 daisg = intersect(vareff_tab$DAIS, FINAL.gene)
 length(daisg)
 togs94 = names(sort(combo.score[,which.max(combo.out)], decreasing = T)) %>% head(length(daisg))
